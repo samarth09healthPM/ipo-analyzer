@@ -32,8 +32,8 @@ def serve_frontend():
     return '<h1>IPO Analyzer API</h1><p>Frontend not found. Check /api/health</p>'
 
 
-DB_PATH    = os.path.join(os.path.dirname(__file__), '..', 'data', 'ipo_analyzer.db')
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', 'config', 'settings.json')
+DB_PATH    = os.path.join(os.path.dirname(__file__), 'data', 'ipo_analyzer.db')
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config', 'settings.json')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
