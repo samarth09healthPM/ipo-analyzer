@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPO Analyzer - Chittorgarh Powered</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const API_BASE = window.location.origin;  // Auto-detect (works on localhost AND cloud)
+        const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+        // ─── Helper: IPO Close Countdown (IST, 3:30 PM cutoff) ──────────────
+        function getCloseCountdown(closeDateStr) {
+            if (!closeDateStr || closeDateStr === 'TBA') return { text: 'TBA', expired: false };
+            try {
+                // Parse dates like "May 26, 2026", "Jun 2, 2026", "2 Jun 2026"
+                const d = new Date(closeDateStr);
+                if (isNaN(d.getTime())) return { text: closeDateStr, expired: false };
+                // Set close time to 3:30 PM IST = 10:00 AM UTC
+                const closeUTC = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), 10, 0, 0));
+                const now = new Date();
+                const diff = closeUTC - now;
+                if (diff <= 0) return { text: 'Closed', expired: true };
+                const days = Math.floor(diff / 86400000);
+                const hours = Math.floor((diff % 86400000) / 3600000);
+                const mins = Math.floor((diff % 3600000) / 60000);
+                if (days > 0) return { text: `${days}d ${hours}h left`, expired: false };
+                if (hours > 0) return { text: `${hours}h ${mins}m left`, expired: false };
+                return { text: `${mins}m left`, expired: false };
+            } catch { return { text: closeDateStr, expired: false }; }
+        }
+
+        // ─── Helper: Format time until next refresh ─────────────────────────
+        function formatTimeLeft(ms) {
+            if (ms <= 0) return 'refreshing...';
+            const mins = Math.floor(ms / 60000);
+            const secs = Math.floor((ms % 60000) / 1000);
+            return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        }
+
+        // ─── Helper: Calculate Logic Score (v1.1 Framework) ──────────────────
+        function calculateLogicScore(ipo) {
+            /**
+             * v1.1 FRAMEWORK (Official - LOCKED)
+             * Criteria Weights:
+             * - QIB Subscription (30%)
+             * - Total Subscription (20%)
+             * - GMP Premium (15%)
+             * - Market Sentiment (13%)
+             * - Sector Performance (15%)
+             * - Issue Size (7%)
+             * - QIB Bonus: +10 if QIB > 50%
+             * - Base Score: 50 points
+             */
+
+            let score = 50; // Base score per framework
+            let reasons = [];
+            let dataAvailability = 0; // Track how much data we have
+
+            // Helper: Parse numeric values from strings
+            const parseValue = (str) => {
+                if (!str || str === '—' || str === 'TBA') return 0;
+                const match = str.toString().match(/[\d.]+/);
+                return match ? parseFloat(match[0]) : 0;
+            };
+
+            // ─── CRITERION 1: QIB Subscription (30% weight) ──────────────────
+            const qib = parseValue(ipo.qib_subscription);
+            if (qib > 0) {
+                dataAvailability++;
+                if (qib > 10) {
+                    score += 15; // Max points for strong QIB
+                    reasons.push(`Strong QIB (${qib}x)`);
+                } else if (qib > 5) {
+                    score += 10;
+                    reasons.push(`Good QIB (${qib}x)`);
+                } else if (qib > 2) {
+                    score += 5;
+                    reasons.push(`Moderate QIB (${qib}x)`);
+                } else {
+                    score -= 5;
+                    reasons.push(`Weak QIB (${qib}x)`);
+                }
+
+                // BONUS: +10 if QIB > 50% (if we had total subscription data)
+                if (qib > 5) { // Proxy: if QIB is strong, likely > 50%
+                    score += 3;
+                    reasons.push('QIB Strong (>50%)');
+                }
+            }
+
+            // ─── CRITERION 2: Total Subscription (20% weight) ──────────────────
+            const hni = parseValue(ipo.hni_subscription);
+            const retail = parseValue(ipo.retail_subscription);
+
+            if (qib > 0 || hni > 0 || retail > 0) {
+                dataAvailability++;
+                const validSubs = [qib, hni, retail].filter(x => x > 0);
+                const avgSub = validSubs.length > 0
+                    ? validSubs.reduce((a, b) => a + b, 0) / validSubs.length
+                    : 0;
+
+                if (avgSub > 10) {
+                    score += 10;
+                    reasons.push('Excellent overall subscription');
+                } else if (avgSub > 5) {
+                    score += 8;
+                    reasons.push('Strong overall subscription');
+                } else if (avgSub > 2) {
+                    score += 4;
+                    reasons.push('Moderate overall subscription');
+                } else if (avgSub > 0) {
+                    score -= 3;
+                    reasons.push('Weak overall subscription');
+                }
+            }
+
+            // ─── CRITERION 3: GMP Premium (15% weight) ────────────────────────
+            const gmpStr = String(ipo.gmp || '');
+            const gmpMatch = gmpStr.match(/([+-]?\d+\.?\d*)/);
+            const gmpValue = gmpMatch ? parseFloat(gmpMatch[1]) : 0;
+
+            if (gmpValue !== 0) {
+                dataAvailability++;
+                if (gmpValue > 30) {
+                    score += 12;
+                    reasons.push(`Exceptional GMP (+${gmpValue}%)`);
+                } else if (gmpValue > 15) {
+                    score += 10;
+                    reasons.push(`Strong GMP (+${gmpValue}%)`);
+                } else if (gmpValue > 5) {
+                    score += 6;
+                    reasons.push(`Positive GMP (+${gmpValue}%)`);
+                } else if (gmpValue > 0) {
+                    score += 2;
+                    reasons.push(`Slight positive GMP (+${gmpValue}%)`);
+                } else if (gmpValue < -15) {
+                    score -= 8;
+                    reasons.push(`Negative GMP (${gmpValue}%)`);
+                } else if (gmpValue < -5) {
+                    score -= 3;
+                    reasons.push(`Weak GMP (${gmpValue}%)`);
+                }
+            }
+
+            // ─── CRITERION 4: Sector Performance (15% weight) ─────────────────
+            const sector = (ipo.sector || '').toLowerCase();
+            dataAvailability++;
+
+            const strongSectors = ['technology', 'fintech', 'it', 'pharma', 'healthcare'];
+            const moderateSectors = ['chemicals', 'manufacturing', 'industrial'];
+            const riskySectors = ['sme']; // SME = high risk/reward
+
+            if (strongSectors.some(s => sector.includes(s))) {
+                score += 8;
+                reasons.push(`${sector.charAt(0).toUpperCase() + sector.slice(1)} sector (strong)`);
+            } else if (moderateSectors.some(s => sector.includes(s))) {
+                score += 3;
+                reasons.push(`${sector.charAt(0).toUpperCase() + sector.slice(1)} sector (stable)`);
+            } else if (riskySectors.some(s => sector.includes(s))) {
+                score += 2;
+                reasons.push('SME sector (high growth potential)');
+            }
+
+            // ─── CRITERION 5: Issue Size (7% weight) ──────────────────────────
+            const issueStr = String(ipo.issue_size_cr || '');
+            const issueMatch = issueStr.match(/[\d.]+/);
+            if (issueMatch) {
+                dataAvailability++;
+                const issueCr = parseFloat(issueMatch[0]);
+
+                if (issueCr > 500) {
+                    score += 5;
+                    reasons.push(`Large issue (₹${issueCr}Cr)`);
+                } else if (issueCr > 100) {
+                    score += 3;
+                    reasons.push(`Medium issue (₹${issueCr}Cr)`);
+                } else if (issueCr > 20) {
+                    score += 1;
+                    reasons.push(`Smaller issue (₹${issueCr}Cr)`);
+                } else {
+                    score -= 2;
+                    reasons.push(`Very small issue (₹${issueCr}Cr)`);
+                }
+            }
+
+            // ─── DATA AVAILABILITY PENALTY ────────────────────────────────────
+            // If very limited data, add note but don't penalize score
+            if (dataAvailability < 2) {
+                reasons.push('⚠️ Limited subscription data (check after opening)');
+            }
+
+            // ─── ENSURE SCORE IS WITHIN BOUNDS ────────────────────────────────
+            score = Math.max(0, Math.min(100, score));
+
+            // If no reasons (shouldn't happen), add default
+            if (reasons.length === 0) {
+                reasons.push('Analyzing available market data');
+            }
+
+            return { score: Math.round(score), reasons };
+        }
+
+        function getRecommendation(score) {
+            // v1.1 Framework: Official thresholds (LOCKED)
+            if (score >= 85) return { label: '✅ GO', color: 'bg-green-600', textColor: 'text-green-400' };
+            if (score >= 70) return { label: '⚠️  CONDITIONAL GO', color: 'bg-yellow-600', textColor: 'text-yellow-400' };
+            return { label: '❌ NO GO', color: 'bg-red-600', textColor: 'text-red-400' };
+        }
+
+        // ─── Search Results Component ─────────────────────────────────────
+        function SearchResults({ results, onSelect, loading }) {
+            if (loading) {
+                return <div className="text-center py-8 text-slate-400">
+                    <div>Searching IPO Ji...</div>
+                    <div className="text-xs text-slate-500 mt-2">(with Chittorgarh fallback)</div>
+                </div>;
+            }
+
+            if (results.length === 0) {
+                return <div className="text-center py-8 text-slate-500">No results found</div>;
+            }
+
+            return (
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {results.map((ipo, idx) => (
+                        <button
+                            key={idx}
+                            onClick={() => onSelect(ipo)}
+                            className="w-full text-left p-4 bg-slate-700 hover:bg-slate-600 rounded-lg border border-slate-600 hover:border-blue-500 transition"
+                        >
+                            <div className="font-semibold text-white">{ipo.name}</div>
+                            <div className="text-sm text-slate-400 mt-1">
+                                Status: {ipo.status} | Open: {ipo.open_date} | Close: {ipo.close_date}
+                            </div>
+                        </button>
+                    ))}
+                </div>
+            );
+        }
+
+        // ─── Detail View Component ────────────────────────────────────────
+        function DetailView({ details, onConfirm, onBack, loading }) {
+            return (
+                <div className="bg-slate-700 rounded-lg p-6 border border-slate-600">
+                    <button
+                        onClick={onBack}
+                        className="text-blue-400 hover:text-blue-300 text-sm mb-4"
+                    >
+                        ← Back to results
+                    </button>
+
+                    <h2 className="text-2xl font-bold text-white mb-4">{details.name}</h2>
+
+                    {details.error ? (
+                        <div className="bg-red-900 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
+                            Error scraping details: {details.error}
+                        </div>
+                    ) : (
+                        <div className="space-y-3 mb-6">
+                            {Object.entries(details).map(([key, val]) => {
+                                // Skip metadata, internal fields, and objects (no JSON dumps)
+                                const skipKeys = ['url', 'scraped_at', 'error', 'name', 'url_data'];
+                                if (skipKeys.includes(key) || !val || typeof val === 'object') return null;
+                                const valStr = String(val);
+                                if (valStr.startsWith('{') || valStr.startsWith('[')) return null; // Skip JSON-like strings
+                                if (valStr.length > 200) return null; // Skip very long values
+                                return (
+                                    <div key={key} className="flex justify-between items-center py-2 border-b border-slate-600">
+                                        <span className="text-slate-300 text-sm capitalize">{key.replace(/_/g, ' ')}</span>
+                                        <span className="text-white font-semibold">{valStr}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={onConfirm}
+                        disabled={loading || details.error}
+                        className={`w-full py-3 rounded-lg font-semibold transition ${
+                            loading || details.error
+                                ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
+                                : 'bg-green-600 hover:bg-green-700 text-white'
+                        }`}
+                    >
+                        {loading ? '⏳ Adding to tracking...' : '✓ Add to My IPOs'}
+                    </button>
+                </div>
+            );
+        }
+
+        // ─── Active IPOs Section (with Logic Score) ───────────────────────
+        function ActiveIPOs({ data, onDeleted }) {
+            const [deleting, setDeleting] = useState(null);
+
+            const handleDelete = async (ipo) => {
+                if (!window.confirm(`Remove "${ipo.name}" from tracking?`)) return;
+
+                setDeleting(ipo.id);
+                try {
+                    const resp = await fetch(`${API_BASE}/api/delete-ipo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ipo_id: ipo.id, ipo_name: ipo.name })
+                    });
+
+                    if (resp.ok) {
+                        console.log(`✅ Deleted "${ipo.name}"`);
+                        onDeleted();
+                    }
+                } catch (err) {
+                    console.error('Delete error:', err);
+                    alert('Failed to delete IPO');
+                } finally {
+                    setDeleting(null);
+                }
+            };
+
+            if (!data || data.length === 0) {
+                return (
+                    <div className="text-center py-12 bg-slate-800 rounded-lg border border-slate-700">
+                        <p className="text-slate-400">No active IPOs in tracking yet</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {data.map(ipo => {
+                        const { score, reasons } = calculateLogicScore(ipo);
+                        const recommendation = getRecommendation(score);
+
+                        return (
+                            <div key={ipo.id} className="bg-slate-800 rounded-lg p-6 border border-slate-700 hover:border-blue-500 transition relative overflow-hidden">
+                                {/* Delete button */}
+                                <button
+                                    onClick={() => handleDelete(ipo)}
+                                    disabled={deleting === ipo.id}
+                                    className="absolute top-4 right-4 p-2 hover:bg-red-600 rounded-lg text-red-400 hover:text-white transition"
+                                >
+                                    {deleting === ipo.id ? '⏳' : '✕'}
+                                </button>
+
+                                {/* Header */}
+                                <div className="flex items-center gap-2 mb-2">
+                                    <span className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                                        ipo.status === 'Open' ? 'bg-green-600 text-white' :
+                                        ipo.status === 'Allotment Out' ? 'bg-blue-600 text-white' :
+                                        ipo.status === 'Listed' ? 'bg-emerald-600 text-white' :
+                                        ipo.status === 'Closed' ? 'bg-orange-600 text-white' :
+                                        'bg-slate-600 text-slate-300'
+                                    }`}>{ipo.status || 'TBA'}</span>
+                                </div>
+                                <h3 className="text-xl font-bold text-white pr-8 mb-1">{ipo.name}</h3>
+                                <p className="text-slate-400 text-sm mb-4">{ipo.sector || 'N/A'}</p>
+
+                                {/* Logic Score Badge */}
+                                <div className="mb-4 flex items-center justify-between bg-slate-700 rounded-lg p-3">
+                                    <div>
+                                        <div className="text-xs text-slate-400 mb-1">Logic Score</div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-2xl font-bold text-white">{score}</span>
+                                            <span className="text-xs text-slate-500">/100</span>
+                                        </div>
+                                    </div>
+                                    <div className={`px-3 py-2 rounded-lg font-semibold text-white ${recommendation.color}`}>
+                                        {recommendation.label}
+                                    </div>
+                                </div>
+
+                                {/* Reasons */}
+                                {reasons.length > 0 && (
+                                    <div className="mb-4 text-xs space-y-1">
+                                        {reasons.map((reason, idx) => (
+                                            <div key={idx} className="text-slate-300">
+                                                • {reason}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Key Metrics */}
+                                <div className="space-y-2 text-sm mb-4 border-t border-slate-600 pt-4">
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Price Band</span>
+                                        <span className="text-white font-semibold">{ipo.issue_price && ipo.issue_price !== 'TBA' ? `₹${ipo.issue_price}` : '—'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Issue Size</span>
+                                        <span className="text-white font-semibold">{ipo.issue_size_cr && ipo.issue_size_cr !== 'TBA' ? (String(ipo.issue_size_cr).includes('Cr') ? `₹${ipo.issue_size_cr}` : `₹${ipo.issue_size_cr} Cr`) : '—'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Opens</span>
+                                        <span className="text-white font-semibold">{ipo.open_date || 'TBA'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Closes</span>
+                                        <span className="text-white font-semibold">{ipo.close_date || 'TBA'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Listing</span>
+                                        <span className="text-white font-semibold">{ipo.listing_date || 'TBA'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">GMP</span>
+                                        <span className="text-yellow-400 font-semibold">{ipo.gmp && ipo.gmp !== '—' ? ipo.gmp : '—'}</span>
+                                    </div>
+                                    {(() => {
+                                        // Calculate min investment: price * lot_size (lot_size stored or default 2000 for SME)
+                                        const price = parseFloat(String(ipo.issue_price || '0').replace(/[^0-9.]/g, ''));
+                                        if (price > 0) {
+                                            const lot = 2000; // SME default, overridden if lot_size available
+                                            const minInv = price * lot;
+                                            return (
+                                                <div className="flex justify-between">
+                                                    <span className="text-slate-400">Min Investment</span>
+                                                    <span className="text-white font-semibold">{`₹${minInv.toLocaleString('en-IN')}`}</span>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
+                                </div>
+
+                                {/* Countdown Timer */}
+                                {(() => {
+                                    const countdown = getCloseCountdown(ipo.close_date);
+                                    if (!countdown.expired && countdown.text !== 'TBA') {
+                                        return (
+                                            <div className="bg-blue-900 bg-opacity-50 border border-blue-700 rounded-lg p-3 mb-4 text-center">
+                                                <div className="text-xs text-blue-300 mb-1">Time to Apply (closes 3:30 PM IST)</div>
+                                                <div className="text-lg font-bold text-blue-200">{countdown.text}</div>
+                                            </div>
+                                        );
+                                    } else if (countdown.expired) {
+                                        return (
+                                            <div className="bg-slate-700 rounded-lg p-2 mb-4 text-center">
+                                                <span className="text-xs text-slate-400">Subscription Closed</span>
+                                            </div>
+                                        );
+                                    }
+                                    return null;
+                                })()}
+
+                                {/* Subscription Data */}
+                                <div className="bg-slate-700 rounded p-3 mb-4 text-xs">
+                                    <div className="text-slate-400 mb-2 font-semibold">Subscription Ratios</div>
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between">
+                                            <span>QIB</span>
+                                            <span className="text-blue-300 font-semibold">{ipo.qib_subscription && ipo.qib_subscription !== '—' ? `${ipo.qib_subscription}x` : '—'}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>HNI / NII</span>
+                                            <span className="text-purple-300 font-semibold">{ipo.hni_subscription && ipo.hni_subscription !== '—' ? `${ipo.hni_subscription}x` : '—'}</span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>Retail</span>
+                                            <span className="text-green-300 font-semibold">{ipo.retail_subscription && ipo.retail_subscription !== '—' ? `${ipo.retail_subscription}x` : '—'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <p className="text-slate-500 text-xs">
+                                    Updated: {new Date(ipo.updated_at).toLocaleDateString()}
+                                </p>
+                            </div>
+                        );
+                    })}
+                </div>
+            );
+        }
+
+        // ─── Listed IPOs Section ──────────────────────────────────────────
+        function ListedIPOs({ data, onDeleted }) {
+            const [deleting, setDeleting] = useState(null);
+
+            const handleDelete = async (ipo) => {
+                if (!window.confirm(`Remove "${ipo.name}" from listed IPOs?`)) return;
+                setDeleting(ipo.id);
+                try {
+                    const resp = await fetch(`${API_BASE}/api/delete-ipo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ipo_id: ipo.id, ipo_name: ipo.name })
+                    });
+                    if (resp.ok) {
+                        console.log(`✅ Deleted "${ipo.name}"`);
+                        onDeleted();
+                    }
+                } catch (err) {
+                    console.error('Delete error:', err);
+                    alert('Failed to delete IPO');
+                } finally {
+                    setDeleting(null);
+                }
+            };
+
+            if (!data || data.length === 0) {
+                return (
+                    <div className="text-center py-12 bg-slate-800 rounded-lg border border-slate-700">
+                        <p className="text-slate-400">No listed IPOs to display</p>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {data.map((ipo, idx) => {
+                        // Calculate listing gain if we have listing price and issue price
+                        const listingPrice = parseFloat(ipo.listing_price);
+                        const issuePrice = parseFloat(ipo.issue_price);
+                        const listingGain = issuePrice && listingPrice ? ((listingPrice - issuePrice) / issuePrice * 100).toFixed(2) : null;
+                        const gainColor = listingGain > 0 ? 'text-green-400' : listingGain < 0 ? 'text-red-400' : 'text-slate-400';
+
+                        return (
+                            <div key={idx} className="bg-gradient-to-br from-slate-800 to-slate-700 rounded-lg p-6 border border-emerald-600 hover:border-emerald-500 transition relative">
+                                {/* Delete button */}
+                                <button
+                                    onClick={() => handleDelete(ipo)}
+                                    disabled={deleting === ipo.id}
+                                    className="absolute top-4 right-4 p-2 hover:bg-red-600 rounded-lg text-red-400 hover:text-white transition"
+                                >
+                                    {deleting === ipo.id ? '⏳' : '✕'}
+                                </button>
+
+                                {/* Listed Badge */}
+                                <div className="inline-block bg-emerald-600 text-white text-xs font-semibold px-3 py-1 rounded-full mb-3">
+                                    ✓ LISTED
+                                </div>
+
+                                <h3 className="text-xl font-bold text-white pr-8 mb-2">{ipo.name}</h3>
+                                <p className="text-slate-400 text-sm mb-4">{ipo.sector || 'N/A'}</p>
+
+                                {/* Pricing */}
+                                <div className="bg-slate-700 rounded-lg p-4 mb-4">
+                                    <div className="flex justify-between items-center mb-3">
+                                        <span className="text-slate-400 text-sm">Listing Price</span>
+                                        <span className="text-2xl font-bold text-emerald-400">₹{listingPrice || '—'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center mb-3">
+                                        <span className="text-slate-400 text-sm">Issue Price</span>
+                                        <span className="text-white font-semibold">₹{issuePrice || '—'}</span>
+                                    </div>
+                                    {listingGain !== null && (
+                                        <div className="flex justify-between items-center border-t border-slate-600 pt-3">
+                                            <span className="text-slate-400 text-sm">Listing Gain</span>
+                                            <span className={`text-lg font-bold ${gainColor}`}>
+                                                {listingGain > 0 ? '+' : ''}{listingGain}%
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Details */}
+                                <div className="space-y-2 text-sm">
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Issue Size</span>
+                                        <span className="text-white font-semibold">{ipo.issue_size_cr && ipo.issue_size_cr !== 'TBA' ? (String(ipo.issue_size_cr).includes('Cr') ? `₹${ipo.issue_size_cr}` : `₹${ipo.issue_size_cr} Cr`) : '—'}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400">Listed Date</span>
+                                        <span className="text-white font-semibold">{ipo.listing_date || 'TBA'}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            );
+        }
+
+        // ─── Main Dashboard ───────────────────────────────────────────────
+        function Dashboard() {
+            const [searchQuery, setSearchQuery] = useState('');
+            const [searchResults, setSearchResults] = useState([]);
+            const [searchLoading, setSearchLoading] = useState(false);
+            const [selectedIPO, setSelectedIPO] = useState(null);
+            const [selectedDetails, setSelectedDetails] = useState(null);
+            const [detailsLoading, setDetailsLoading] = useState(false);
+            const [dashboardData, setDashboardData] = useState(null);
+            const [dashboardLoading, setDashboardLoading] = useState(true);
+            const [nextRefreshIn, setNextRefreshIn] = useState(REFRESH_INTERVAL_MS);
+            const [lastRefreshed, setLastRefreshed] = useState(null);
+            const nextRefreshRef = useRef(Date.now() + REFRESH_INTERVAL_MS);
+
+            // Load dashboard data + GMP refresh every 30 min
+            useEffect(() => {
+                const fetchDashboard = async () => {
+                    try {
+                        // Refresh GMP data from ipowatch.in
+                        try { await fetch(`${API_BASE}/api/refresh-gmp`, { method: 'POST' }); } catch {}
+                        const resp = await fetch(`${API_BASE}/api/dashboard`);
+                        if (resp.ok) {
+                            setDashboardData(await resp.json());
+                            setLastRefreshed(new Date());
+                            nextRefreshRef.current = Date.now() + REFRESH_INTERVAL_MS;
+                        }
+                    } catch (err) {
+                        console.error('Dashboard error:', err);
+                    } finally {
+                        setDashboardLoading(false);
+                    }
+                };
+
+                fetchDashboard();
+                const refreshId = setInterval(fetchDashboard, REFRESH_INTERVAL_MS);
+                // Countdown ticker every second
+                const tickId = setInterval(() => {
+                    setNextRefreshIn(Math.max(0, nextRefreshRef.current - Date.now()));
+                }, 1000);
+                return () => { clearInterval(refreshId); clearInterval(tickId); };
+            }, []);
+
+            const handleSearch = async (e) => {
+                e.preventDefault();
+                if (searchQuery.length < 2) return;
+
+                console.log('[DEBUG] Search started for:', searchQuery);
+                setSearchLoading(true);
+                try {
+                    // Set 60 second timeout (increased from 30s)
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+                    const searchUrl = `${API_BASE}/api/search-chittorgarh?q=${encodeURIComponent(searchQuery)}`;
+                    console.log('[DEBUG] Fetch URL:', searchUrl);
+
+                    const resp = await fetch(searchUrl, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+
+                    console.log('[DEBUG] Response status:', resp.status);
+
+                    if (!resp.ok) {
+                        console.error('[DEBUG] Search failed with status:', resp.status);
+                        alert(`Search failed: ${resp.status}`);
+                        setSearchResults([]);
+                        return;
+                    }
+
+                    const data = await resp.json();
+                    console.log('[DEBUG] Search response:', data);
+                    console.log('[DEBUG] Results count:', data.results?.length || 0);
+
+                    const results = data.results || [];
+                    setSearchResults(results);
+                    setSelectedIPO(null);
+                    setSelectedDetails(null);
+
+                    if (results.length === 0) {
+                        alert('No results found. Try a different search term.');
+                    }
+                } catch (err) {
+                    console.error('[DEBUG] Search error:', err);
+                    if (err.name === 'AbortError') {
+                        alert('Search timeout (60s). The source is slow or not responding. Try: 1) Different IPO name, 2) Check Flask logs, 3) Restart Flask');
+                    } else {
+                        alert('Search failed: ' + err.message);
+                    }
+                    setSearchResults([]);
+                } finally {
+                    setSearchLoading(false);
+                }
+            };
+
+            const handleSelectIPO = async (ipo) => {
+                console.log('[DEBUG] IPO selected:', ipo);
+                setSelectedIPO(ipo);
+                setDetailsLoading(true);
+
+                try {
+                    const payload = { url: ipo.url, name: ipo.name };
+                    console.log('[DEBUG] Scrape request payload:', payload);
+
+                    const resp = await fetch(`${API_BASE}/api/scrape-ipo-details`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    console.log('[DEBUG] Scrape response status:', resp.status);
+
+                    const data = await resp.json();
+                    console.log('[DEBUG] Scrape response:', data);
+
+                    setSelectedDetails(data.details || {});
+                    console.log('[DEBUG] Details set:', data.details);
+                } catch (err) {
+                    console.error('[DEBUG] Scrape error:', err);
+                    setSelectedDetails({ error: err.message });
+                } finally {
+                    setDetailsLoading(false);
+                }
+            };
+
+            const handleConfirm = async () => {
+                console.log('[DEBUG] handleConfirm called');
+                if (!selectedIPO) {
+                    console.log('[DEBUG] No IPO selected');
+                    return;
+                }
+
+                const payload = {
+                    ipo_name: selectedIPO.name,
+                    sector: selectedDetails?.sector || 'TBA',
+                    status: selectedDetails?.status || 'TBA',
+                    issue_price: selectedDetails?.price_band || '',
+                    issue_size_cr: selectedDetails?.issue_size || '',
+                    open_date: selectedDetails?.open_date || '',
+                    close_date: selectedDetails?.close_date || '',
+                    listing_date: selectedDetails?.listing_date || '',
+                    listing_price: selectedDetails?.listing_price || '',
+                    gmp: selectedDetails?.gmp || '',
+                    qib_subscription: selectedDetails?.qib_subscription || '',
+                    hni_subscription: selectedDetails?.hni_subscription || '',
+                    retail_subscription: selectedDetails?.retail_subscription || ''
+                };
+
+                console.log('[DEBUG] Add-IPO payload:', payload);
+
+                try {
+                    const resp = await fetch(`${API_BASE}/api/add-ipo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    console.log('[DEBUG] Add-
