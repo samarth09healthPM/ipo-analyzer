@@ -28,8 +28,9 @@ def serve_frontend():
     """Serve the dashboard HTML"""
     frontend_path = os.path.join(os.path.dirname(__file__), 'frontend', 'ipo_dashboard_v2.html')
     if os.path.exists(frontend_path):
-        return send_file(frontend_path)
-    return '<h1>IPO Analyzer API</h1><p>Frontend not found. Check /api/health</p>'
+        with open(frontend_path, 'r', encoding='utf-8') as f:
+            return f.read(), 200, {'Content-Type': 'text/html; charset=utf-8'}
+    return f'<h1>Frontend not found</h1><p>Looked at: {frontend_path}</p><p>Files: {os.listdir(os.path.dirname(__file__))}</p>'
 
 
 DB_PATH    = os.path.join(os.path.dirname(__file__), 'data', 'ipo_analyzer.db')
