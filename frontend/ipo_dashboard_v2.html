@@ -15,7 +15,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        const API_BASE = window.location.origin;  // Auto-detect (works on localhost AND cloud)
+        const API_BASE = window.location.origin;
         const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
         // ─── Helper: IPO Close Countdown (IST, 3:30 PM cutoff) ──────────────
@@ -735,4 +735,157 @@
                         body: JSON.stringify(payload)
                     });
 
-                    console.log('[DEBUG] Add-
+                    console.log('[DEBUG] Add-IPO response status:', resp.status);
+                    const responseData = await resp.json();
+                    console.log('[DEBUG] Add-IPO response:', responseData);
+
+                    if (resp.ok) {
+                        alert(`✅ "${selectedIPO.name}" added to tracking!`);
+                        setSearchQuery('');
+                        setSearchResults([]);
+                        setSelectedIPO(null);
+                        setSelectedDetails(null);
+
+                        // Refresh dashboard
+                        console.log('[DEBUG] Refreshing dashboard...');
+                        const dashResp = await fetch(`${API_BASE}/api/dashboard`);
+                        if (dashResp.ok) {
+                            const dashData = await dashResp.json();
+                            console.log('[DEBUG] Dashboard refreshed:', dashData);
+                            setDashboardData(dashData);
+                        }
+                    } else {
+                        console.error('[DEBUG] Add-IPO failed:', responseData);
+                        alert('Failed to add IPO: ' + responseData.message);
+                    }
+                } catch (err) {
+                    console.error('[DEBUG] Add error:', err);
+                    alert('Failed to add IPO: ' + err.message);
+                }
+            };
+
+            // Separate tracking vs listed IPOs
+            const trackingIPOs = dashboardData?.active_ipos?.data?.filter(ipo => ipo.status !== 'Listed') || [];
+            const listedIPOs = dashboardData?.active_ipos?.data?.filter(ipo => ipo.status === 'Listed') || [];
+
+            return (
+                <div className="min-h-screen p-4 md:p-8 lg:p-12">
+                    {/* Header */}
+                    <div className="mb-8 flex justify-between items-start">
+                        <div>
+                            <h1 className="text-4xl font-bold text-white mb-2 flex items-center gap-3">
+                                📈 IPO Analyzer Pro
+                            </h1>
+                            <p className="text-slate-400">Real-time IPO tracking with Logic Scoring • Data from IPO Ji + ipowatch.in</p>
+                        </div>
+                        <div className="text-right text-xs">
+                            <div className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3">
+                                <div className="text-slate-400 mb-1">Next data refresh in</div>
+                                <div className="text-lg font-bold text-blue-400">{formatTimeLeft(nextRefreshIn)}</div>
+                                {lastRefreshed && (
+                                    <div className="text-slate-500 mt-1">Last: {lastRefreshed.toLocaleTimeString('en-IN')}</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Search Section */}
+                    <div className="mb-12 bg-slate-800 rounded-lg p-8 border border-slate-700">
+                        <h2 className="text-2xl font-bold text-white mb-6">🔍 Search IPOs</h2>
+
+                        {selectedIPO && selectedDetails ? (
+                            <DetailView
+                                details={selectedDetails}
+                                onConfirm={handleConfirm}
+                                onBack={() => setSelectedIPO(null)}
+                                loading={detailsLoading}
+                            />
+                        ) : (
+                            <div>
+                                <form onSubmit={handleSearch} className="flex gap-3 mb-6">
+                                    <input
+                                        type="text"
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        placeholder="Enter IPO name (e.g., Zomato, Paytm, LIC)"
+                                        className="flex-1 px-4 py-3 bg-slate-700 text-white rounded-lg border border-slate-600 focus:border-blue-500 outline-none"
+                                    />
+                                    <button
+                                        type="submit"
+                                        disabled={searchLoading || searchQuery.length < 2}
+                                        className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white rounded-lg font-semibold transition"
+                                    >
+                                        {searchLoading ? '🔄' : 'Search'}
+                                    </button>
+                                </form>
+
+                                <SearchResults
+                                    results={searchResults}
+                                    onSelect={handleSelectIPO}
+                                    loading={searchLoading}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Active IPOs (Tracking) */}
+                    <div className="mb-12">
+                        <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
+                            📊 My IPO Tracking
+                            {trackingIPOs.length > 0 && (
+                                <span className="px-3 py-1 bg-blue-600 text-white text-sm rounded-full">
+                                    {trackingIPOs.length}
+                                </span>
+                            )}
+                        </h2>
+
+                        {dashboardLoading ? (
+                            <div className="text-center py-12 text-slate-400">Loading IPO data…</div>
+                        ) : (
+                            <ActiveIPOs
+                                data={trackingIPOs}
+                                onDeleted={async () => {
+                                    const resp = await fetch(`${API_BASE}/api/dashboard`);
+                                    if (resp.ok) {
+                                        setDashboardData(await resp.json());
+                                    }
+                                }}
+                            />
+                        )}
+                    </div>
+
+                    {/* Listed IPOs */}
+                    {listedIPOs.length > 0 && (
+                        <div className="mb-12">
+                            <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
+                                🎯 Listed IPOs
+                                <span className="px-3 py-1 bg-emerald-600 text-white text-sm rounded-full">
+                                    {listedIPOs.length}
+                                </span>
+                            </h2>
+
+                            <ListedIPOs
+                                data={listedIPOs}
+                                onDeleted={async () => {
+                                    const resp = await fetch(`${API_BASE}/api/dashboard`);
+                                    if (resp.ok) {
+                                        setDashboardData(await resp.json());
+                                    }
+                                }}
+                            />
+                        </div>
+                    )}
+
+                    <div className="mt-12 pt-8 border-t border-slate-700 text-center">
+                        <p className="text-slate-500 text-sm">
+                            IPO Analyzer Pro • Data: IPO Ji + ipowatch.in GMP • Logic Scoring v1.1 • Auto-refresh every 30 min
+                        </p>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard />);
+    </script>
+</body>
+</html>
