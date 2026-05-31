@@ -1152,6 +1152,7 @@ def get_db_connection():
 def _ensure_db_schema():
     """Ensure database has all required columns"""
     try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = get_db_connection()
         cur = conn.cursor()
 
